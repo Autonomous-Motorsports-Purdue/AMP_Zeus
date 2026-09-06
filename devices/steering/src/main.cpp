@@ -44,6 +44,7 @@ void beginSteeringOutput(uint8_t initial_position) {
 
 void setSteering(const amp::steering::PositionCommand& message) {
   writeSteeringPosition(message.position);
+  Serial.printf("RECEIVED steering=%" PRIu8 "\n", message.position);
 }
 
 auto can = amp::can::makeNode(

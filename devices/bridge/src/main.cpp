@@ -75,6 +75,7 @@ const Command* findCommand(const String& name) {
 }
 
 bool can_ready = false;
+String serial_line;
 
 void handleLine(String line) {
   line.trim();
@@ -99,13 +100,18 @@ void handleLine(String line) {
 
 void readSerial() {
   while (Serial.available()) {
-    handleLine(Serial.readStringUntil('\n'));
+    const char character = static_cast<char>(Serial.read());
+    if (character == '\n') {
+      handleLine(serial_line);
+      serial_line = "";
+    } else if (character != '\r') {
+      serial_line += character;
+    }
   }
 }
 
 void setup() {
   Serial.begin(115200);
-  Serial.setTimeout(25);
   delay(500);
   can_ready = can.begin();
   if (!can_ready) {
