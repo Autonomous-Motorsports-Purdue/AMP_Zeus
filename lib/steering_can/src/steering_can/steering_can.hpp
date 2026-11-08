@@ -1,25 +1,10 @@
 #pragma once
 
-#include <cstdint>
+#include "amp_can/can_bus.hpp"
 
 namespace amp::steering {
 
-struct PositionCommand {
-  static constexpr uint8_t packet = 0xF0;
-  static constexpr uint8_t payload_size = 1;
-
-  uint8_t node_id;
-  uint8_t position;
-
-  PositionCommand(uint8_t node = 10, uint8_t value = 128)
-      : node_id(node), position(value) {}
-
-  void serialize(uint8_t* data) const { data[0] = position; }
-
-  bool deserialize(const uint8_t* data) {
-    position = data[0];
-    return true;
-  }
-};
+// CubeMars AK servo-mode position command, in the actuator's protocol degrees.
+bool setPosition(uint8_t controller_id, double position_deg, can::Frame& frame);
 
 }  // namespace amp::steering

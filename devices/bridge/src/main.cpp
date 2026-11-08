@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <cstdio>
 #include <cstring>
 
 #include "amp_can/twai_can_bus.hpp"
@@ -13,9 +14,16 @@
 #ifndef CAN_BITRATE
 #define CAN_BITRATE 500000
 #endif
+#ifndef STEERING_CAN_ID
+#define STEERING_CAN_ID 104
+#endif
 
 static_assert(VESC_CAN_ID >= 0 && VESC_CAN_ID <= 254,
               "VESC_CAN_ID must be in the range 0..254; 255 broadcasts to every VESC");
+static_assert(STEERING_CAN_ID >= 0 && STEERING_CAN_ID <= 254,
+              "STEERING_CAN_ID must be in the range 0..254");
+static_assert(STEERING_CAN_ID != VESC_CAN_ID,
+              "Steering and VESC must use different CAN IDs");
 
 constexpr gpio_num_t kCanTx = GPIO_NUM_15;
 constexpr gpio_num_t kCanRx = GPIO_NUM_16;
@@ -23,19 +31,23 @@ constexpr uint8_t kMaxCanFramesPerLoop = 8;
 constexpr size_t kMaxLineLength = 512;
 constexpr size_t kSerialBytesPerLoop = 128;
 constexpr uint32_t kVescTelemetryIntervalMs = 100;
+constexpr uint32_t kDebugIntervalMs = 1000;
 
 amp::can::TwaiBus can_bus(kCanTx, kCanRx, CAN_BITRATE);
 bool can_ready = false;
 char serial_line[kMaxLineLength + 1];
 size_t serial_length = 0;
 bool line_overflow = false;
-char output[512];
+char output[768];
 size_t output_length = 0;
 size_t output_offset = 0;
 amp::vesc::Status latest_vesc_status{};
 bool vesc_status_pending = false;
 uint32_t vesc_status_time_ms = 0;
 uint32_t last_vesc_telemetry_ms = 0;
+uint32_t last_debug_ms = 0;
+uint32_t can_rx_count = 0;
+amp::can::Frame latest_can_rx{};
 
 void cacheVescStatus(const amp::can::Frame& frame) {
   amp::vesc::Status status{};
@@ -48,6 +60,8 @@ void cacheVescStatus(const amp::can::Frame& frame) {
 }
 
 void handleCanFrame(const amp::can::Frame& frame) {
+  latest_can_rx = frame;
+  ++can_rx_count;
   cacheVescStatus(frame);
 }
 
@@ -70,10 +84,30 @@ void writeSerial() {
       reinterpret_cast<const uint8_t*>(output + output_offset), count);
 }
 
+void describeFrame(JsonObject object, const amp::can::Frame& frame) {
+  char id[9];
+  char data[25]{};
+  snprintf(id, sizeof(id), "%08lX", static_cast<unsigned long>(frame.id));
+  if (!frame.remote) {
+    for (uint8_t i = 0; i < frame.length; ++i) {
+      snprintf(data + i * 3, sizeof(data) - i * 3, "%02X ", frame.data[i]);
+    }
+    if (frame.length) data[frame.length * 3 - 1] = '\0';
+  }
+  object["can_id_hex"] = id;
+  object["extended"] = frame.extended;
+  object["remote"] = frame.remote;
+  object["dlc"] = frame.length;
+  object["data_hex"] = data;
+}
+
 void sendError(const char* error) {
-  StaticJsonDocument<128> response;
+  StaticJsonDocument<256> response;
   response["ok"] = false;
   response["error"] = error;
+  JsonObject debug = response.createNestedObject("debug");
+  debug["event"] = "command_rejected";
+  debug["ts_ms"] = millis();
   queueJson(response);
 }
 
@@ -86,7 +120,7 @@ void handleLine() {
     return;
   }
 
-  StaticJsonDocument<256> response;
+  StaticJsonDocument<768> response;
   if (request.containsKey("id")) {
     if (!request["id"].is<uint32_t>()) {
       sendError("id_must_be_uint32");
@@ -99,16 +133,18 @@ void handleLine() {
                            ? request["target"].as<const char*>() : "";
   const char* failure = nullptr;
   bool sent = false;
+  bool transmit_attempted = false;
+  amp::can::Frame frame{};
   if (strcmp(target, "steering") == 0) {
-    if (!request["position"].is<int32_t>() ||
-        request["position"].as<int32_t>() < 0 ||
-        request["position"].as<int32_t>() > 255) {
-      failure = "position_must_be_integer_0_to_255";
+    if (!request["position_deg"].is<double>() ||
+        !amp::steering::setPosition(
+            STEERING_CAN_ID, request["position_deg"].as<double>(), frame)) {
+      failure = "position_deg_must_be_number_minus36000_to_36000";
     } else if (!can_ready) {
       failure = "can_not_ready";
     } else {
-      sent = can.send(amp::steering::PositionCommand(
-          10, request["position"].as<uint8_t>()), 0);
+      transmit_attempted = true;
+      sent = can.send(frame, 0);
     }
   } else if (strcmp(target, "vesc") == 0) {
     if (!request["erpm"].is<int32_t>()) {
@@ -116,8 +152,9 @@ void handleLine() {
     } else if (!can_ready) {
       failure = "can_not_ready";
     } else {
-      sent = can.send(amp::vesc::setRpm(
-          VESC_CAN_ID, request["erpm"].as<int32_t>()), 0);
+      frame = amp::vesc::setRpm(VESC_CAN_ID, request["erpm"].as<int32_t>());
+      transmit_attempted = true;
+      sent = can.send(frame, 0);
     }
   } else {
     failure = "unknown_target";
@@ -126,6 +163,11 @@ void handleLine() {
   response["ok"] = sent;
   if (sent) response["status"] = "queued";
   else response["error"] = failure ? failure : "can_transmit_failed";
+  JsonObject debug = response.createNestedObject("debug");
+  debug["event"] = sent ? "can_tx_queued" :
+      transmit_attempted ? "can_tx_failed" : "command_rejected";
+  debug["ts_ms"] = millis();
+  if (transmit_attempted) describeFrame(debug, frame);
   queueJson(response);
 }
 
@@ -166,12 +208,46 @@ void publishVescTelemetry() {
   last_vesc_telemetry_ms = now;
 }
 
+void publishCanDebug() {
+  const uint32_t now = millis();
+  if (output_offset != output_length || Serial.available() ||
+      now - last_debug_ms < kDebugIntervalMs) return;
+
+  StaticJsonDocument<1024> event;
+  event["type"] = "debug";
+  event["event"] = "can_status";
+  event["ts_ms"] = now;
+  event["can_ready"] = can_ready;
+  event["rx_total"] = can_rx_count;
+  if (can_rx_count) describeFrame(event.createNestedObject("last_rx"), latest_can_rx);
+  twai_status_info_t status{};
+  if (can_ready && twai_get_status_info(&status) == ESP_OK) {
+    event["state"] = status.state == TWAI_STATE_RUNNING ? "running" :
+        status.state == TWAI_STATE_BUS_OFF ? "bus_off" :
+        status.state == TWAI_STATE_RECOVERING ? "recovering" : "stopped";
+    event["tx_queued"] = status.msgs_to_tx;
+    event["rx_queued"] = status.msgs_to_rx;
+    event["tx_error_counter"] = status.tx_error_counter;
+    event["rx_error_counter"] = status.rx_error_counter;
+    event["tx_failed"] = status.tx_failed_count;
+    event["bus_errors"] = status.bus_error_count;
+    event["rx_missed"] = status.rx_missed_count;
+  }
+  queueJson(event);
+  last_debug_ms = now;
+}
+
 void setup() {
   Serial.begin(115200);
   can_ready = can.begin();
-  StaticJsonDocument<128> event;
+  StaticJsonDocument<256> event;
   event["type"] = "ready";
   event["can_ready"] = can_ready;
+  event["can_bitrate"] = CAN_BITRATE;
+  event["can_tx_gpio"] = static_cast<int>(kCanTx);
+  event["can_rx_gpio"] = static_cast<int>(kCanRx);
+  event["steering_node"] = STEERING_CAN_ID;
+  event["vesc_node"] = VESC_CAN_ID;
   queueJson(event);
 }
 
@@ -180,5 +256,6 @@ void loop() {
   readSerial();
   if (can_ready) can.poll(kMaxCanFramesPerLoop);
   publishVescTelemetry();
+  publishCanDebug();
   writeSerial();
 }

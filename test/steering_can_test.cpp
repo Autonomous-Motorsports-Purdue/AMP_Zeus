@@ -1,47 +1,46 @@
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 
-#include "amp_can/can_node.hpp"
-#include "amp_can/message_codec.hpp"
 #include "steering_can/steering_can.hpp"
 
 int main() {
-  amp::steering::PositionCommand command(10, 25);
-  amp::can::Frame frame = amp::can::encode(command);
+  amp::can::Frame frame{};
+  assert(amp::steering::setPosition(104, 25.5, frame));
   assert(frame.extended);
   assert(!frame.remote);
-  assert(frame.id == 0xF00A);
-  assert(frame.length == 1);
-  assert(frame.data[0] == 25);
+  assert(frame.id == 0x0468);
+  assert(frame.length == 4);
+  assert(frame.data[0] == 0x00 && frame.data[1] == 0x03);
+  assert(frame.data[2] == 0xE4 && frame.data[3] == 0x18);
 
-  amp::steering::PositionCommand decoded(10, 0);
-  assert(amp::can::decode(frame, decoded));
-  assert(decoded.node_id == 10);
-  assert(decoded.position == 25);
-
-  uint32_t calls = 0;
-  amp::steering::PositionCommand received;
-  auto route = amp::can::on<amp::steering::PositionCommand>(
-      10, [&](const amp::steering::PositionCommand& message) {
-        ++calls;
-        received = message;
-      });
-  route.dispatch(frame);
-  assert(calls == 1);
-  assert(received.node_id == 10);
-  assert(received.position == 25);
-
-  amp::steering::PositionCommand other_node(11, 50);
-  amp::can::Frame other_frame = amp::can::encode(other_node);
-  route.dispatch(other_frame);
-  assert(calls == 1);
+  assert(amp::steering::setPosition(11, -25.5, frame));
+  assert(frame.id == 0x040B);
+  assert(frame.data[0] == 0xFF && frame.data[1] == 0xFC);
+  assert(frame.data[2] == 0x1B && frame.data[3] == 0xE8);
 
   frame.remote = true;
-  assert(!amp::can::decode(frame, decoded));
-  frame.remote = false;
-  frame.length = 2;
-  assert(!amp::can::decode(frame, decoded));
-  frame.length = 1;
-  frame.extended = false;
-  assert(!amp::can::decode(frame, decoded));
+  frame.data[7] = 0xFF;
+  assert(amp::steering::setPosition(10, 0.0, frame));
+  assert(!frame.remote);
+  for (const uint8_t byte : frame.data) assert(byte == 0);
+
+  assert(amp::steering::setPosition(10, 36000.0, frame));
+  assert(frame.data[0] == 0x15 && frame.data[1] == 0x75);
+  assert(frame.data[2] == 0x2A && frame.data[3] == 0x00);
+  assert(amp::steering::setPosition(10, -36000.0, frame));
+  assert(frame.data[0] == 0xEA && frame.data[1] == 0x8A);
+  assert(frame.data[2] == 0xD6 && frame.data[3] == 0x00);
+
+  assert(amp::steering::setPosition(10, 1.23456, frame));
+  assert(frame.data[2] == 0x30 && frame.data[3] == 0x39);
+  assert(amp::steering::setPosition(10, -1.23456, frame));
+  assert(frame.data[2] == 0xCF && frame.data[3] == 0xC7);
+
+  assert(!amp::steering::setPosition(10, 36000.1, frame));
+  assert(!amp::steering::setPosition(10, -36000.1, frame));
+  assert(!amp::steering::setPosition(10, NAN, frame));
+  assert(!amp::steering::setPosition(10, INFINITY, frame));
+  assert(!amp::steering::setPosition(10, -INFINITY, frame));
+  assert(!amp::steering::setPosition(255, 0.0, frame));
 }
