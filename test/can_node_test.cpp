@@ -21,6 +21,10 @@ struct TestMessage {
   }
 };
 
+struct OtherMessage : TestMessage {
+  static constexpr uint8_t packet = 0x43;
+};
+
 class FakeBus {
  public:
   bool begin() {
@@ -95,4 +99,53 @@ int main() {
   bus.has_pending = true;
   assert(node.poll(1) == 1);
   assert(total == 5);
+
+  uint32_t all_nodes = 0;
+  uint32_t filtered = 0;
+  uint32_t other = 0;
+  uint32_t raw = 0;
+  auto listeners = amp::can::makeNode(
+      bus,
+      amp::can::on<TestMessage>(
+          [&](const TestMessage& message) { all_nodes += message.value; }),
+      amp::can::on<TestMessage>(
+          7, [&](const TestMessage& message) { filtered += message.value; }),
+      amp::can::on<OtherMessage>(
+          [&](const OtherMessage& message) { other += message.value; }),
+      amp::can::onFrame([&](const amp::can::Frame&) { ++raw; }));
+  auto deliver = [&](const amp::can::Frame& frame) {
+    bus.pending = frame;
+    bus.has_pending = true;
+    assert(listeners.poll(1) == 1);
+  };
+
+  received.node_id = 7;
+  received.value = 2;
+  deliver(amp::can::encode(received));
+  received.node_id = 8;
+  deliver(amp::can::encode(received));
+  assert(all_nodes == 4 && filtered == 2 && other == 0 && raw == 2);
+
+  OtherMessage other_message;
+  other_message.node_id = 8;
+  other_message.value = 3;
+  deliver(amp::can::encode(other_message));
+  assert(all_nodes == 4 && filtered == 2 && other == 3 && raw == 3);
+
+  auto invalid = amp::can::encode(received);
+  invalid.length = 0;
+  deliver(invalid);
+  invalid = amp::can::encode(received);
+  invalid.remote = true;
+  deliver(invalid);
+  invalid = amp::can::encode(received);
+  invalid.extended = false;
+  deliver(invalid);
+  invalid = amp::can::encode(received);
+  invalid.id |= 0x10000;
+  deliver(invalid);
+  invalid = amp::can::encode(received);
+  invalid.id = 0x4407;
+  deliver(invalid);
+  assert(all_nodes == 4 && filtered == 2 && other == 3 && raw == 8);
 }

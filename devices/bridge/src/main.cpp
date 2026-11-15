@@ -5,6 +5,7 @@
 
 #include "amp_can/twai_can_bus.hpp"
 #include "amp_can/can_node.hpp"
+#include "kart_state/can_state.hpp"
 #include "steering_can/steering_can.hpp"
 #include "vesc_can/vesc_can.hpp"
 
@@ -24,6 +25,9 @@ static_assert(STEERING_CAN_ID >= 0 && STEERING_CAN_ID <= 254,
               "STEERING_CAN_ID must be in the range 0..254");
 static_assert(STEERING_CAN_ID != VESC_CAN_ID,
               "Steering and VESC must use different CAN IDs");
+static_assert(STEERING_CAN_ID != amp::kart::kBridgeNode &&
+                  VESC_CAN_ID != amp::kart::kBridgeNode,
+              "Bridge and motor controllers must use different CAN IDs");
 
 constexpr gpio_num_t kCanTx = GPIO_NUM_15;
 constexpr gpio_num_t kCanRx = GPIO_NUM_16;
@@ -48,26 +52,31 @@ uint32_t last_vesc_telemetry_ms = 0;
 uint32_t last_debug_ms = 0;
 uint32_t can_rx_count = 0;
 amp::can::Frame latest_can_rx{};
+amp::kart::CanState kart_state(amp::kart::kBridgeNode);
 
-void cacheVescStatus(const amp::can::Frame& frame) {
-  amp::vesc::Status status{};
-  if (amp::vesc::decodeStatus(frame, status) &&
-      status.controller_id == VESC_CAN_ID) {
-    latest_vesc_status = status;
-    vesc_status_time_ms = millis();
-    vesc_status_pending = true;
-  }
+void cacheVescStatus(const amp::vesc::Status& status) {
+  latest_vesc_status = status;
+  vesc_status_time_ms = millis();
+  vesc_status_pending = true;
 }
 
-void handleCanFrame(const amp::can::Frame& frame) {
-  latest_can_rx = frame;
-  ++can_rx_count;
-  cacheVescStatus(frame);
-}
+auto can = amp::can::makeNode(
+    can_bus,
+    amp::can::on<amp::kart::StateMessage>(
+        [](const amp::kart::StateMessage &message) {
+          kart_state.receive(message);
+        }),
+    amp::can::on<amp::kart::StateRequest>(
+        [](const amp::kart::StateRequest &request) {
+          kart_state.receive(request);
+        }),
+    amp::can::on<amp::vesc::Status>(VESC_CAN_ID, cacheVescStatus),
+    amp::can::onFrame([](const amp::can::Frame &frame) {
+      latest_can_rx = frame;
+      ++can_rx_count;
+    }));
 
-auto can = amp::can::makeNode(can_bus, amp::can::onFrame(handleCanFrame));
-
-void queueJson(const JsonDocument& document) {
+void queueJson(const JsonDocument &document) {
   output_length = serializeJson(document, output, sizeof(output) - 1);
   output[output_length++] = '\n';
   output_offset = 0;
@@ -111,6 +120,17 @@ void sendError(const char* error) {
   queueJson(response);
 }
 
+void describeKartState(JsonObject object) {
+  const auto& state = kart_state.state();
+  object["mode"] = static_cast<uint8_t>(state.mode);
+  object["stop_generation"] = state.stop_generation;
+  object["revision"] = state.revision;
+  object["writer"] = state.writer;
+  object["synchronized"] = kart_state.synchronized();
+  object["autonomous_authorized"] =
+      kart_state.is(amp::kart::Mode::Autonomous);
+}
+
 void handleLine() {
   StaticJsonDocument<768> request;
   const DeserializationError error = deserializeJson(
@@ -135,7 +155,48 @@ void handleLine() {
   bool sent = false;
   bool transmit_attempted = false;
   amp::can::Frame frame{};
-  if (strcmp(target, "steering") == 0) {
+  const bool motion_target =
+      strcmp(target, "steering") == 0 || strcmp(target, "vesc") == 0;
+  if (strcmp(target, "kart") == 0) {
+    if (!request.containsKey("mode") && !request.containsKey("reset_estop")) {
+      response["ok"] = true;
+      describeKartState(response.createNestedObject("kart"));
+      queueJson(response);
+      return;
+    }
+    bool applied = false;
+    if (!can_ready) {
+      failure = "can_not_ready";
+    } else if (request.containsKey("reset_estop")) {
+      if (request.containsKey("mode") || !request["reset_estop"].is<bool>() ||
+          !request["reset_estop"].as<bool>()) {
+        failure = "reset_estop_requires_true_and_no_mode";
+      } else {
+        applied = kart_state.resetEstop();
+      }
+    } else {
+      const char* mode = request["mode"].is<const char*>()
+                             ? request["mode"].as<const char*>() : "";
+      amp::kart::Mode parsed;
+      if (amp::kart::parseMode(mode, parsed)) {
+        applied = kart_state.setMode(parsed);
+      } else {
+        failure = "mode_must_be_idle_autonomous_rc_or_estop";
+      }
+    }
+    response["applied"] = applied;
+    describeKartState(response.createNestedObject("kart"));
+    if (applied) {
+      frame = kart_state.frame();
+      transmit_attempted = true;
+      sent = kart_state.publish(can_bus, millis());
+    } else if (!failure) {
+      failure = "kart_transition_rejected";
+    }
+  } else if (motion_target &&
+             !kart_state.is(amp::kart::Mode::Autonomous)) {
+    failure = "autonomous_not_authorized";
+  } else if (strcmp(target, "steering") == 0) {
     if (!request["position_deg"].is<double>() ||
         !amp::steering::setPosition(
             STEERING_CAN_ID, request["position_deg"].as<double>(), frame)) {
@@ -219,6 +280,7 @@ void publishCanDebug() {
   event["ts_ms"] = now;
   event["can_ready"] = can_ready;
   event["rx_total"] = can_rx_count;
+  describeKartState(event.createNestedObject("kart"));
   if (can_rx_count) describeFrame(event.createNestedObject("last_rx"), latest_can_rx);
   twai_status_info_t status{};
   if (can_ready && twai_get_status_info(&status) == ESP_OK) {
@@ -252,9 +314,10 @@ void setup() {
 }
 
 void loop() {
+  if (can_ready) can.poll(kMaxCanFramesPerLoop);
   writeSerial();
   readSerial();
-  if (can_ready) can.poll(kMaxCanFramesPerLoop);
+  if (can_ready) kart_state.update(can_bus, millis());
   publishVescTelemetry();
   publishCanDebug();
   writeSerial();

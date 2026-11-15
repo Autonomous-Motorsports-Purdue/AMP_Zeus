@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "vesc_can/vesc_can.hpp"
+#include "amp_can/can_node.hpp"
 
 int main() {
   using amp::can::Frame;
@@ -45,9 +46,34 @@ int main() {
   assert(std::fabs(status.motor_current_amps - -12.3f) < 0.001f);
   assert(std::fabs(status.duty_cycle - 0.5f) < 0.001f);
 
+  uint32_t filtered_calls = 0;
+  uint32_t all_calls = 0;
+  auto filtered = amp::can::on<amp::vesc::Status>(
+      7, [&](const amp::vesc::Status& received) {
+        assert(received.controller_id == 7);
+        assert(received.electrical_rpm == 12000);
+        ++filtered_calls;
+      });
+  auto all = amp::can::on<amp::vesc::Status>(
+      [&](const amp::vesc::Status&) { ++all_calls; });
+  filtered.dispatch(raw_status);
+  all.dispatch(raw_status);
+  raw_status.id = amp::vesc::makeId(Packet::Status, 8);
+  filtered.dispatch(raw_status);
+  all.dispatch(raw_status);
+  assert(filtered_calls == 1 && all_calls == 2);
+  filtered.dispatch(rpm);
+  all.dispatch(rpm);
+  assert(filtered_calls == 1 && all_calls == 2);
+
   raw_status.remote = true;
   assert(!amp::vesc::decodeStatus(raw_status, status));
+  filtered.dispatch(raw_status);
+  all.dispatch(raw_status);
   raw_status.remote = false;
   raw_status.id |= 0x10000;
   assert(!amp::vesc::decodeStatus(raw_status, status));
+  filtered.dispatch(raw_status);
+  all.dispatch(raw_status);
+  assert(filtered_calls == 1 && all_calls == 2);
 }

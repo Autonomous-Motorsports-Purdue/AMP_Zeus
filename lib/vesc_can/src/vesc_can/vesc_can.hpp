@@ -39,4 +39,13 @@ bool setCurrent(uint8_t controller_id, float amps, can::Frame& frame);
 bool setDuty(uint8_t controller_id, float duty, can::Frame& frame);
 bool decodeStatus(const can::Frame& frame, Status& status);
 
+// Adapt the native status decoder to typed CAN listeners.
+inline bool decode(const can::Frame& frame, Status& status) {
+  return decodeStatus(frame, status);
+}
+
+inline bool decode(const can::Frame& frame, uint8_t node_id, Status& status) {
+  return (frame.id & 0xFF) == node_id && decodeStatus(frame, status);
+}
+
 }  // namespace amp::vesc

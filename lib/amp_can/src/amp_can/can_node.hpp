@@ -15,15 +15,20 @@ template <typename Message, typename Handler>
 class Route {
  public:
   Route(uint8_t node_id, Handler&& handler)
-      : node_id_(node_id), handler_(std::move(handler)) {}
+      : node_id_(node_id), filter_node_(true), handler_(std::move(handler)) {}
+
+  explicit Route(Handler&& handler) : handler_(std::move(handler)) {}
 
   void dispatch(const Frame& frame) {
     Message message{};
-    if (decode(frame, node_id_, message)) handler_(message);
+    if (filter_node_ ? decode(frame, node_id_, message) : decode(frame, message)) {
+      handler_(message);
+    }
   }
 
  private:
-  uint8_t node_id_;
+  uint8_t node_id_ = 0;
+  bool filter_node_ = false;
   Handler handler_;
 };
 
@@ -50,6 +55,12 @@ template <typename Handler>
 FrameRoute<typename std::decay<Handler>::type> onFrame(Handler&& handler) {
   typedef typename std::decay<Handler>::type StoredHandler;
   return FrameRoute<StoredHandler>(std::forward<Handler>(handler));
+}
+
+template <typename Message, typename Handler>
+Route<Message, typename std::decay<Handler>::type> on(Handler&& handler) {
+  typedef typename std::decay<Handler>::type StoredHandler;
+  return Route<Message, StoredHandler>(std::forward<Handler>(handler));
 }
 
 template <typename Bus, typename... Routes>
