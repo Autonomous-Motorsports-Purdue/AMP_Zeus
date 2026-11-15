@@ -68,6 +68,10 @@ class ControlTest(unittest.TestCase):
 
     def test_steering(self):
         self.assertEqual(
+            control.parse_command("steering reset_origin=true"),
+            {"target": "steering", "reset_origin": True},
+        )
+        self.assertEqual(
             control.parse_command("steering position_deg=50"),
             {"target": "steering", "position_deg": 50},
         )

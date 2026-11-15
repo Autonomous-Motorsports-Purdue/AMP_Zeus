@@ -4,6 +4,16 @@
 
 namespace amp::steering {
 
+bool resetOrigin(uint8_t controller_id, can::Frame& frame) {
+  if (controller_id == 255) return false;
+  frame = can::Frame{};
+  frame.id = (uint32_t{5} << 8) | controller_id;
+  frame.extended = true;
+  frame.length = 1;
+  frame.data[0] = 0;
+  return true;
+}
+
 bool setPosition(uint8_t controller_id, double position_deg, can::Frame& frame) {
   if (controller_id == 255 || !std::isfinite(position_deg) ||
       position_deg < -36000.0 || position_deg > 36000.0) {

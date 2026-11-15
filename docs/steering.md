@@ -41,6 +41,24 @@ The bridge sends one extended data frame with ID `(4 << 8) | STEERING_CAN_ID`
 command. Protocol reference: CubeMars' [AK 2.0 driver manual V1.0.18](https://www.cubemars.com/data/cms/202605/ak-series-driver-manual-v1-0-18-for-ak-2-0-robotic-actuator.pdf),
 sections 5.1 and 5.1.5.
 
+### Reset temporary origin
+
+With the motor stationary at the intended zero position and no pending motion
+commands, type this in `py/control.py`:
+
+```text
+steering reset_origin=true
+```
+
+The USB JSON equivalent is `{"target":"steering","reset_origin":true}`.
+This sends an extended CAN frame with ID `(5 << 8) | STEERING_CAN_ID`
+(`0x0568` for node 104), DLC 1, payload `00`, per manual section 5.1.6.
+It makes the current position temporary zero; it does not seek a home position,
+command a stop, or write permanent calibration. Zero is lost on actuator power
+loss. Do not combine it with `position_deg` in one request. A queued response
+still does not confirm the motor received or applied it. Subsequent position
+commands use the new origin, so verify it before commanding travel.
+
 ## Commissioning and limitations
 
 - `position_deg` is in the actuator firmware's position coordinate system.

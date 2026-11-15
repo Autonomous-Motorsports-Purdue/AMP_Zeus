@@ -33,6 +33,7 @@ Commands:
 ```json
 {"id":1,"target":"steering","position_deg":0.0}
 {"id":2,"target":"vesc","erpm":1500}
+{"id":3,"target":"steering","reset_origin":true}
 ```
 
 - `id` is optional. If supplied, it must be an unsigned 32-bit integer and is
@@ -43,6 +44,11 @@ Commands:
   PWM field is no longer supported. See [steering setup](steering.md) before use.
 - VESC targets `VESC_CAN_ID` (currently 62 in `platformio.ini`). `erpm` is a
   signed 32-bit electrical RPM setpoint, not wheel RPM or throttle percentage.
+- Steering `reset_origin:true` sets the current actuator position as temporary
+  zero (cleared on power loss). It must be boolean `true` and cannot be combined
+  with `position_deg`; otherwise the response is `reset_origin_must_be_true` or
+  `reset_origin_conflicts_with_position_deg`. Only issue this while stationary,
+  with no pending motion commands. It redefines zero; it is not homing or stop.
 - Unknown fields are ignored. Missing fields, wrong types, unsupported targets,
   and out-of-range values produce errors without sending a CAN command.
 
@@ -89,6 +95,7 @@ with either `=` or `:` as the separator:
 ```text
 vesc erpm: 1000
 steering position_deg=50
+steering reset_origin=true
 vesc erpm=0
 ```
 

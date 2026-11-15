@@ -22,6 +22,7 @@ HELP = """Shortcuts:
 Generic commands: <target> <field>=<value> [<field>=<value> ...]
   vesc erpm: 1000
   steering position_deg=50
+  steering reset_origin=true   set current position as temporary zero
   vesc erpm=0
   help           show commands
   quit           exit without sending a command

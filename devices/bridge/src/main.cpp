@@ -136,15 +136,27 @@ void handleLine() {
   bool transmit_attempted = false;
   amp::can::Frame frame{};
   if (strcmp(target, "steering") == 0) {
-    if (!request["position_deg"].is<double>() ||
+    if (request.containsKey("reset_origin")) {
+      if (request.containsKey("position_deg")) {
+        failure = "reset_origin_conflicts_with_position_deg";
+      } else if (!request["reset_origin"].is<bool>() ||
+                 !request["reset_origin"].as<bool>()) {
+        failure = "reset_origin_must_be_true";
+      } else {
+        amp::steering::resetOrigin(STEERING_CAN_ID, frame);
+      }
+    } else if (!request["position_deg"].is<double>() ||
         !amp::steering::setPosition(
             STEERING_CAN_ID, request["position_deg"].as<double>(), frame)) {
       failure = "position_deg_must_be_number_minus36000_to_36000";
-    } else if (!can_ready) {
-      failure = "can_not_ready";
-    } else {
-      transmit_attempted = true;
-      sent = can.send(frame, 0);
+    }
+    if (!failure) {
+      if (!can_ready) {
+        failure = "can_not_ready";
+      } else {
+        transmit_attempted = true;
+        sent = can.send(frame, 0);
+      }
     }
   } else if (strcmp(target, "vesc") == 0) {
     if (!request["erpm"].is<int32_t>()) {

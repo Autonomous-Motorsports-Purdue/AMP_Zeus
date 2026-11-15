@@ -43,4 +43,14 @@ int main() {
   assert(!amp::steering::setPosition(10, INFINITY, frame));
   assert(!amp::steering::setPosition(10, -INFINITY, frame));
   assert(!amp::steering::setPosition(255, 0.0, frame));
+
+  frame.remote = true;
+  frame.data[7] = 0xFF;
+  assert(amp::steering::resetOrigin(104, frame));
+  assert(frame.id == 0x0568);
+  assert(frame.extended);
+  assert(!frame.remote);
+  assert(frame.length == 1);
+  for (const uint8_t byte : frame.data) assert(byte == 0);
+  assert(!amp::steering::resetOrigin(255, frame));
 }
